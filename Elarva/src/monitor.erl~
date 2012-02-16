@@ -1,0 +1,261 @@
+%% Author: Dru
+%% Created: 12 Dec 2010
+-module(monitor).
+
+%%
+%% Include files
+%%
+
+%%
+%% Exported Functions
+%%
+-export([monitorManager/4,addTraceElem/3,getNthTraceElement/2,interpret/3,subst/2,buildSubstTuple/2]).
+
+
+%%
+%% API Functions
+%%
+
+% * Monitors should be made to register (and unregister) with monitor managers (remote monitor managers in the case of centralised approach) to listen for latest event information,
+%   when that monitor is waiting on some event to continue monitoring execution.
+
+monitorManager(NodeName,Counter,Trace,MonitorPids) -> 
+	receive
+		{addTraceElem,{Event,EventParams}} -> NewTrace = [{NodeName,Counter,Event,EventParams}] ++ Trace,        % adds the received trace element information to the monitor trace.
+											  main:out("~w generated event (~w,~w) with counter value ~w. ~n",[NodeName,Event,EventParams,Counter]),
+											  triggerWaitingMonitors(MonitorPids),
+											  monitorManager(NodeName,Counter+1,NewTrace,[]);
+		{getCounterVal,ResPid} -> ResPid ! {counterVal,Counter},                                  % used to implement the SetC rule
+		                                   monitorManager(NodeName,Counter,Trace,MonitorPids);
+		{getNthTraceElement,N,ResPid} -> TraceElement = getNthTraceElement(N,Trace),         % implements rule TRACEo, where the trace element with counter value N is extracted from the trace, and sent to the monitor
+										 ResPid ! {nthTraceElement,TraceElement},            % if no trace element found at counter N, noMatchingElementFound is sent instead.
+										 monitorManager(NodeName,Counter,Trace,MonitorPids);
+		{registerMonitor,MonPid} -> NewMonPidList = [MonPid|MonitorPids],
+									monitorManager(NodeName,Counter,Trace,NewMonPidList);
+		{startMonitor,{Loc,M}} -> main:out("MONTOR GO ~w ~n",[M]),
+			                      spawn(monitor,interpret,[Loc,Counter,M]),           % start monitor by spawning new process! 
+							      monitorManager(NodeName,Counter,Trace,MonitorPids)
+    end.
+
+% add trace element information to the node trace
+addTraceElem(MMPid,Event,EventParams) -> MMPid ! {addTraceElem,{Event,EventParams}}.
+
+%%
+%% Local Functions
+%%
+
+listVal([],X) -> X;
+listVal([Head|Tail],X) ->
+	{A,B} = Head,
+	if (A == X) -> B;
+	   (1 == 1) -> listVal(Tail,X)
+	end.
+
+listVals([],X) -> X;
+listVals(Tuple,[]) -> [];
+listVals(Tuple,[Head|Tail]) -> 
+	Res = listVal(Tuple,Head),
+	[Res|listVals(Tuple,Tail)].
+
+removeFromTuple([],X) -> [];
+removeFromTuple([Head|Tail],X) ->
+	{A,_} = Head,
+	if (A == X) -> removeFromTuple(Tail,X);
+	   (1 == 1) -> [Head|removeFromTuple(Tail,X)]
+	end.
+
+removeMultFromTuple([],X) -> [];
+removeMultFromTuple(Tuple,[]) -> Tuple;
+removeMultFromTuple(Tuple,[Head|Tail]) ->
+	Res = removeFromTuple(Tuple,Head),
+    removeMultFromTuple(Res,Tail).
+
+buildSubstTuple([],Y) ->
+	if (length(Y) /= 0) -> tupleSizesDoNotMatch;
+	   (1 == 1) -> []
+	end;
+buildSubstTuple(X,[]) ->
+	if (length(X) /= 0) -> tupleSizesDoNotMatch;
+	   (1 == 1) -> []
+	end;
+buildSubstTuple([Head|Tail],[Head2|Tail2]) ->
+	[{Head,Head2}|buildSubstTuple(Tail,Tail2)].
+
+% Function implementing substitution
+subst(Tuple,{go,K,M}) ->
+	Res = listVal(Tuple,K),
+	{go,Res,subst(Tuple,M)};
+subst(Tuple,{out,Chan,Vals}) ->
+	Res1 = listVal(Tuple,Chan),
+	Res2 = listVals(Tuple,Vals),
+	{out,Res1,Res2};
+subst(Tuple,{in,Chan,InTuple,M}) -> % ? is a binder for InTuple
+    NewChan = listVal(Tuple,Chan),
+    NewTuple = removeMultFromTuple(Tuple,InTuple),
+    {in,NewChan,InTuple,subst(NewTuple,M)};
+subst(Tuple,{new,C,M}) -> % new is a binder for C
+    NewTuple = removeFromTuple(Tuple,C),
+    {new,C,subst(NewTuple,M)};
+subst(Tuple,{ifthenelse,T1,T2,M,N}) ->
+	NewT1 = listVals(Tuple,T1),
+	NewT2 = listVals(Tuple,T2),
+	{ifthenelse,NewT1,NewT2,subst(Tuple,M),subst(Tuple,N)};
+subst(Tuple,{par,M,N}) ->
+	{par,subst(Tuple,M),subst(Tuple,N)};
+subst(Tuple,{star,M}) ->
+	{star,subst(Tuple,M)};
+subst(Tuple,{setC,K,M}) ->
+    Res = listVal(Tuple,K),
+	{setC,Res,subst(Tuple,M)};
+subst(Tuple,{ok}) ->
+	{ok};
+subst(Tuple,{fail}) ->
+	{fail};
+subst(Tuple,{stop}) ->
+	{stop};
+subst(Tuple,{m,C,InTuple,M}) ->
+	{Loc,Event} = C,
+	NewLoc = listVal(Tuple,Loc),
+    NewEvent = listVal(Tuple,Event),
+    NewTuple = removeMultFromTuple(Tuple,InTuple),
+    {m,{NewLoc,NewEvent},InTuple,subst(NewTuple,M)};
+subst(Tuple,{exists,Var,Type,M,SignalChan}) -> % Exists is a binder for Var
+    NewTuple = removeFromTuple(Tuple,Var),
+	NewType = listVal(Tuple,Type),
+	NewSignalChan = listVal(Tuple,SignalChan),
+	{exists,Var,NewType,subst(NewTuple,M),NewSignalChan}.
+	
+% --- A function which interprets monitor expressions -----------------------------------------------------------------------------------------------
+
+interpret(Loc,Counter,{{M}}) ->
+	main:out("ERROR MONITOR ~n",[]);
+%go K.M
+interpret(Loc,Counter,{go,K,M}) ->
+	NewLocMM = nodeMM(K),
+	NewLocMM ! {startMonitor,{K,M}};
+% u!v
+interpret(Loc,Counter,{out,Chan,Val}) ->
+	outputChannel(Chan,Val);
+	%main:out("HUHUHUHU ~w ~n",[Chan]);
+% u?v.M
+interpret(Loc,Counter,{in,Chan,InTuple,M}) ->
+    %main:out("INPUT CHANNEL ~w ~n",[Chan]),
+	Res = inputChannel(Chan),
+	SubstTuple = buildSubstTuple(InTuple,Res),
+	NewM = subst(SubstTuple,M),
+	interpret(Loc,Counter,NewM);
+% new C.M
+interpret(Loc,Counter,{new,C,M}) ->
+	createChannels(C),
+	interpret(Loc,Counter,M);
+% if U == V then M else N
+interpret(Loc,Counter,{ifthenelse,U,V,M,N}) ->
+	if (U == V) -> interpret(Loc,Counter,M);
+	   (1 == 1) -> interpret(Loc,Counter,N)
+	end;
+% M || N
+interpret(Loc,Counter,{par,M,N}) ->
+	spawn(monitor,interpret,[Loc,Counter,M]),
+	spawn(monitor,interpret,[Loc,Counter,N]);
+% * M
+interpret(Loc,Counter,{star,M}) ->
+	interpret(Loc,Counter,M),
+	interpret(Loc,Counter,{setC,Loc,{star,M}});
+% setC(K).M
+interpret(Loc,Counter,{setC,K,M}) ->
+	NewCounter = setC(K),
+	interpret(Loc,NewCounter,M);
+% ok
+interpret(Loc,Counter,{ok}) ->
+	main:out("[OK] --- Monitor at location ~w with counter value ~w generated OK signal! ~n",[Loc,Counter]);
+%fail
+interpret(Loc,Counter,{fail}) ->
+	main:out("[FAIL] --- Monitor at location ~w with counter value ~w generated FAIL signal! ~n",[Loc,Counter]);
+%stop
+interpret(Loc,Counter,{stop}) ->
+	main:out("[STOP] --- Monitor stopped execution at location ~w with counter value ~w. ~n",[Loc,Counter]);
+%m(C,X).M
+interpret(Loc,Counter,{m,C,InTuple,M}) ->
+	{LocEvent,Event} = C,
+	TraceElement = readTraceElem(LocEvent,Counter),
+	if (TraceElement == noMatchingElementFound) -> registerMonitor(LocEvent),
+												   receive
+													   newEventTraceInfo -> newEventTraceInfo
+												   end,
+												   interpret(Loc,Counter,{m,C,InTuple,M});
+	   (1 == 1) -> {_,_,Event2,Event2Params} = TraceElement,
+				   %main:out("EVENT = ~w, EVENT2 = ~w ~n",[Event,Event2]),
+				   if (Event == Event2) -> SubstTuple = buildSubstTuple(InTuple,Event2Params),NewM = subst(SubstTuple,M),interpret(Loc,Counter+1,NewM);
+					  (1 == 1) -> interpret(Loc,Counter+1,{m,C,InTuple,M})
+				   end
+	end;
+%exists var:Type. M
+interpret(Loc,Counter,{exists,Var,Type,M,SignalChan}) ->
+	createChannels([SignalChan]),
+	spawnExistsInstances(Loc,Counter,Var,Type,M).
+
+	
+	
+% --- Helper functions, implementing certain monitor operations, and additional functionality ------------------------------------------------------------------------------------------------
+
+spawnExistsInstances(Loc,Counter,Var,[],M) ->
+   %NewM = subst([{Var,Head}],M),
+   %main:out("AM ~w ~w ~w ~n",[NewM,Var,Head]),
+   %spawn(monitor,interpret,[Loc,Counter,NewM])
+   ok;
+spawnExistsInstances(Loc,Counter,Var,[Head|Tail],M) ->
+   NewM = subst([{Var,Head}],M),   
+   spawn(monitor,interpret,[Loc,Counter,NewM]),
+   spawnExistsInstances(Loc,Counter,Var,Tail,M).
+	
+% used to trigger all monitors waiting for some new trace element information
+triggerWaitingMonitors([]) -> ok;
+triggerWaitingMonitors([Head|Tail]) -> 
+	Head ! newEventTraceInfo,
+	triggerWaitingMonitors(Tail).
+
+% used to register a monitor as waiting for trace event information, when the current level of information does not reach the monitor's local counter value
+registerMonitor(NodeName) ->
+	NodeMM = nodeMM(NodeName),
+	NodeMM ! {registerMonitor,self()}.
+
+% implements the action of outputting to a channel
+outputChannel(ChanName,Val) ->
+	channel:writeChannel(ChanName, Val).
+
+% implements the action of inputting from a channel
+inputChannel(ChanName) ->
+	channel:readChannel(ChanName).
+
+% implements the creation of a channel, simulated through a process
+createChannels(ChanNames) ->
+	channel:newChannels(ChanNames).
+
+% implements the action of getting the counter value at some location NodeName
+setC(NodeName) ->
+	nodeMM(NodeName) ! {getCounterVal,self()},
+	receive
+		{counterVal,Counter} -> Res = Counter
+	end,
+	Res.
+
+% builds the associated monitor manager name for location NodeName
+nodeMM(NodeName) ->
+	main:createAtomWithSuffix(NodeName,"Mm").
+
+% reads trace element N from location NodeName, or returns noMatchingElementFound if no trace element available at N
+readTraceElem(NodeName,N) ->
+	nodeMM(NodeName) ! {getNthTraceElement,N,self()},
+	receive
+		{nthTraceElement,TraceElement} -> Res = TraceElement
+	end,
+	Res.
+
+% given a trace in the form of a list, as well as value N, this function returns the trace element in the list which has its counter equal to N, or noMatchingElementFound if no such
+% trace element exists
+getNthTraceElement(N,[]) -> noMatchingElementFound;
+getNthTraceElement(N,[Head|Tail]) -> 
+	{_,Counter,_,_} = Head,
+	if (N == Counter) -> Head;
+	   (1 == 1) -> getNthTraceElement(N,Tail)
+    end.

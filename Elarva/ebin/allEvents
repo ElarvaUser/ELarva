@@ -1,0 +1,37 @@
+GLOBAL{ 
+
+	PROPERTY users{ 
+
+		EVENTS{ 
+			LinkEvent = LINK <{bank, init, 0}> <{bank, loop, 0}>
+			UnLinkEvent = UNLINK <{bank, init, 0}> <{bank, loop, 0}>
+			RegisterEvent = REGISTER <{bank, init, 0}> name
+			UnRegisterEvent = UNREGISTER <{bank, init, 0}> name
+			SpawnEvent = SPAWN <{bank, init, 0}> <{bank, loop, 0}>
+			CallEvent = CALL <_> <{bank, loop, 0}>
+			SendEvent = SEND <_> <{request_record, Name}>
+			ReceiveEvent = RECEIVE <_> <{backend_response, {Patient, Diagnosis}}>
+			ChannelEvent = CHANNEL <_> <{backend_response, {Patient, Diagnosis}}>
+		}EVENTS 
+
+		STATES{ 
+			
+			BAD{
+				stop {} 
+			}BAD 
+			NORMAL{ 
+				receiveMsg {}
+			}NORMAL
+			STARTING{
+				start {}
+			}STARTING 
+
+		}STATES 
+		
+		TRANSITIONS{ 
+			start -> receiveMsg [SendEvent\\<{variable, ["put(name, Name)"]}>]
+		}TRANSITIONS 
+
+	}PROPERTY
+
+}GLOBAL

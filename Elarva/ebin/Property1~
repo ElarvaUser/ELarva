@@ -1,0 +1,36 @@
+GLOBAL{ 
+
+	FOREACH <{patient, newPatient, [_]}> {
+
+	PROPERTY patient{
+
+		EVENTS{ 
+			RequestRecord = CALL <{patient, requestRecord, 1}>
+			ReceiveResponse = RECEIVE <{backend_response, Response}>
+		}EVENTS 
+
+		STATES{ 
+			
+			BAD{
+				invalidRequest {} 
+			}BAD 
+			NORMAL{ 
+				request {}
+			}NORMAL
+			STARTING{
+				start {}
+			}STARTING 
+
+		}STATES 
+		
+		TRANSITIONS{ 
+			start -> request [RequestRecord\\]
+			start -> invalidRequest [ReceiveResponse\\]
+			request -> start [ReceiveResponse\\]
+		}TRANSITIONS 
+
+	}PROPERTY
+
+	}FOREACH
+
+}GLOBAL

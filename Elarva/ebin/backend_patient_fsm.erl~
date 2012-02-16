@@ -1,0 +1,113 @@
+-module(backend_patient_fsm).
+
+-behaviour(gen_fsm).
+
+-export([violation/2, request/2, start/2, start_link/0, start_link/1, init/1, state_name/3, handle_event/3, handle_sync_event/4, handle_info/3, terminate/3, code_change/4]).
+
+-define(SERVER, ?MODULE).
+
+start_link() ->
+	gen_fsm:start_link({local, ?SERVER}, ?MODULE, [], []).
+
+start_link(Args) ->
+	gen_fsm:start_link(?MODULE, Args, []).
+
+init(State) ->
+	{ok, start, State}.
+
+violation(Event, State) ->
+	io:format("backend_patient_fsm - ~w - received event - ~w - while in state - violation~n", [self(), Event]),
+	io:format("FSM reached bad state!!!~n"),
+	{next_state, violation, State}.
+
+request(Event, State) ->
+	io:format("backend_patient_fsm - ~w - received event - ~w - while in state - request~n", [self(), Event]),
+	case Event of
+		{'SendResponse', {doc_response,DocName,Res,{Patient,Diagnosis}}} ->
+			_Condition1 = (Patient == get(name)) and (Res == approve),
+			_Condition2 = (Patient == get(name)) and (Res == reject),
+			if
+				_Condition1 == true ->
+					put(acknowledgedDoctors, get(acknowledgedDoctors) ++ [DocName]),
+					io:format("backend_patient_fsm - ~w - is in state: request~n", [self()]),
+					{next_state, request, State};
+				_Condition2 == true ->
+					put(rejectedDoctors, get(rejectedDoctors) ++ [DocName]),
+					io:format("backend_patient_fsm - ~w - is in state: request~n", [self()]),
+					{next_state, request, State};
+				true ->
+					io:format("backend_patient_fsm - ~w - is in state: request", [self()]),
+					{next_state, request, State}
+			end;
+		{'ReceiveResponse', {backend_response, {Patient, Diagnosis}}} ->
+			_Condition1 = ((get(linkedDoctors) -- get(acknowledgedDoctors)) == [],
+			_Condition2 = ((get(linkedDoctors) -- get(acknowledgedDoctors)) /= [],
+			if
+				_Condition1 == true ->
+					io:format("backend_patient_fsm - ~w - is in state: start", [self()]),
+					{next_state, start, State};
+				_Condition2 == true ->
+					io:format("backend_patient_fsm - ~w - is in state: violation", [self()]),
+					{next_state, violation, State};
+				true ->
+					io:format("backend_patient_fsm - ~w - is in state: request", [self()]),
+					{next_state, request, State}
+			end;
+		{'RejectResponse', {backend_response, request_denied}} ->
+			io:format("backend_patient_fsm - ~w - is in state: start", [self()]),
+			{next_state, start, State};
+		_ ->
+			{next_state, request, State}
+	end.
+
+start(Event, State) ->
+	io:format("backend_patient_fsm - ~w - received event - ~w - while in state - start~n", [self(), Event]),
+	case Event of
+		{'RequestRecord', {request_record, Name}} ->
+			io:format("backend_patient_fsm - ~w - is in state: request", [self()]),
+			{next_state, request, State};
+		{'LinkPatient', {linkPatientToDoc,DocName,Patient}} ->
+			_Condition1 = get(name) == undefined,
+			_Condition2 = (Patient == get(name)) and (get(linkedDoctors) == undefined),
+			if
+				_Condition1 == true ->
+					put(name, Patient),
+					put(linkedDoctors, []),
+					put(acknowledgedDoctors, []),
+					put(rejectedDoctors, []),
+					put(linkedDoctors, get(linkedDoctors) ++ [DocName]),
+					io:format("backend_patient_fsm - ~w - is in state: start~n", [self()]),
+					{next_state, start, State};
+				_Condition2 == true ->
+					put(linkedDoctors, get(linkedDoctors) ++ [DocName]),
+					io:format("backend_patient_fsm - ~w - is in state: start~n", [self()]),
+					{next_state, start, State};
+				true ->
+					io:format("backend_patient_fsm - ~w - is in state: start", [self()]),
+					{next_state, start, State}
+			end;
+		_ ->
+			{next_state, start, State}
+	end.
+
+state_name(_Event, _From, State) ->
+	Reply = ok,
+	{reply, Reply, start, State}.
+
+handle_event(stop, StateName, State) ->
+	{stop, normal, State};
+handle_event(_Event, StateName, State) ->
+	{next_state, StateName, State}.
+
+handle_sync_event(Event, From, StateName, State) ->
+	Reply = ok,
+	{reply, Reply, StateName, State}.
+
+handle_info(_Info, StateName, State) ->
+	{next_state, StateName, State}.
+
+terminate(_Reason, _StateName, _State) ->
+	ok.
+
+code_change(_OldVsn, StateName, State, _Extra) ->
+	{ok, StateName, State}.

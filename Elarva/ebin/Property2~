@@ -1,0 +1,64 @@
+GLOBAL{ 
+
+	FOREACH <{patient, newPatient, [Name]}> {
+
+	PROPERTY patient{
+
+		EVENTS{ 
+			RequestRecord = SEND <{request_record, Name}>
+			ReceiveResponse = RECEIVE <{backend_response, {Patient, Diagnosis}}>
+			RejectResponse = RECEIVE <{backend_response, request_denied}>
+		}EVENTS 
+
+		STATES{ 
+			
+			BAD{
+				violation {} 
+			}BAD 
+			NORMAL{ 
+				request {}
+			}NORMAL
+			STARTING{
+				start {}
+			}STARTING 
+
+		}STATES 
+		
+		TRANSITIONS{ 
+			start -> request [RequestRecord\\<{variable, ["put(name, Name)"]}>]
+			request -> start [ReceiveResponse\<Patient == get(name)>\]
+			request -> violation [ReceiveResponse\<Patient == get(name)>\]
+			request -> start [RejectResponse\\]
+		}TRANSITIONS 
+
+	}PROPERTY
+
+	}FOREACH
+
+	PROPERTY users{ 
+
+		EVENTS{ 
+			ReceiveMsg = RECEIVE <_> <{rec}>
+		}EVENTS 
+
+		STATES{ 
+			
+			BAD{
+				stop {} 
+			}BAD 
+			NORMAL{ 
+				receiveMsg {}
+			}NORMAL
+			STARTING{
+				start {}
+			}STARTING 
+
+		}STATES 
+		
+		TRANSITIONS{ 
+			start -> receiveMsg [ReceiveMsg\\]
+		}TRANSITIONS 
+
+	}PROPERTY
+
+}GLOBAL
